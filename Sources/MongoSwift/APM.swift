@@ -691,6 +691,16 @@ private func publishEvent<T: MongoSwiftEvent>(type: T.Type, eventPtr: OpaquePoin
     }
     let client = Unmanaged<MongoClient>.fromOpaque(context).takeUnretainedValue()
 
+    // no need to initialize or publish event if no handlers are registered.
+    if type.self is CommandEventProtocol.Type {
+        if client.commandEventHandlers.isEmpty {
+            return
+        }
+    // assume SDAM event.
+    } else if client.sdamEventHandlers.isEmpty {
+        return
+    }
+
     let event = type.init(mongocEvent: mongocEvent)
 
     // TODO: SWIFT-524: remove workaround for CDRIVER-3256
