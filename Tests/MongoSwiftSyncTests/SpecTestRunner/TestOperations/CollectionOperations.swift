@@ -268,61 +268,149 @@ struct InsertMany: TestOperation {
 /// Extension of `WriteModel` adding `Decodable` conformance.
 extension WriteModel: Decodable {
     private enum CodingKeys: CodingKey {
-        case name, arguments
+        case name, arguments, insertOne, deleteOne, deleteMany, replaceOne, updateOne, updateMany
     }
 
-    private enum InsertOneKeys: CodingKey {
-        case session, document
+    private enum InsertOneKeys: String, CodingKey, CaseIterable {
+        case document
     }
 
-    private enum DeleteKeys: CodingKey {
-        case session, filter
+    private enum DeleteKeys: String, CodingKey, CaseIterable {
+        case filter
     }
 
-    private enum ReplaceOneKeys: CodingKey {
-        case session, filter, replacement
+    private enum ReplaceOneKeys: String, CodingKey, CaseIterable {
+        case filter, replacement, upsert, collation
     }
 
-    private enum UpdateKeys: CodingKey {
-        case session, filter, update
+    private enum UpdateKeys: String, CodingKey, CaseIterable {
+        case filter, update, arrayFilters, collation, upsert
     }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        let name = try container.decode(String.self, forKey: .name)
 
-        switch name {
-        case "insertOne":
-            let args = try container.nestedContainer(keyedBy: InsertOneKeys.self, forKey: .arguments)
-            let doc = try args.decode(CollectionType.self, forKey: .document)
-            self = .insertOne(doc)
-        case "deleteOne", "deleteMany":
-            let options = try container.decode(DeleteModelOptions.self, forKey: .arguments)
-            let args = try container.nestedContainer(keyedBy: DeleteKeys.self, forKey: .arguments)
-            let filter = try args.decode(BSONDocument.self, forKey: .filter)
-            self = name == "deleteOne" ? .deleteOne(filter, options: options) : .deleteMany(filter, options: options)
-        case "replaceOne":
-            let options = try container.decode(ReplaceOneModelOptions.self, forKey: .arguments)
-            let args = try container.nestedContainer(keyedBy: ReplaceOneKeys.self, forKey: .arguments)
-            let filter = try args.decode(BSONDocument.self, forKey: .filter)
-            let replacement = try args.decode(CollectionType.self, forKey: .replacement)
-            self = .replaceOne(filter: filter, replacement: replacement, options: options)
-        case "updateOne", "updateMany":
-            let options = try container.decode(UpdateModelOptions.self, forKey: .arguments)
-            let args = try container.nestedContainer(keyedBy: UpdateKeys.self, forKey: .arguments)
-            let filter = try args.decode(BSONDocument.self, forKey: .filter)
-            let update = try args.decode(BSONDocument.self, forKey: .update)
-            self = name == "updateOne" ?
-                .updateOne(filter: filter, update: update, options: options) :
-                .updateMany(filter: filter, update: update, options: options)
-        default:
-            throw DecodingError.typeMismatch(
-                WriteModel.self,
-                DecodingError.Context(
-                    codingPath: decoder.codingPath,
-                    debugDescription: "Unknown write model: \(name)"
+        // old way of structuring bulk writes in tests
+        if let name = try container.decodeIfPresent(String.self, forKey: .name) {
+            switch name {
+            case "insertOne":
+                let args = try container.nestedContainer(keyedBy: InsertOneKeys.self, forKey: .arguments)
+                let doc = try args.decode(CollectionType.self, forKey: .document)
+                self = .insertOne(doc)
+            case "deleteOne", "deleteMany":
+                let options = try container.decode(DeleteModelOptions.self, forKey: .arguments)
+                let args = try container.nestedContainer(keyedBy: DeleteKeys.self, forKey: .arguments)
+                let filter = try args.decode(BSONDocument.self, forKey: .filter)
+                self = name == "deleteOne" ? .deleteOne(filter, options: options) : .deleteMany(filter, options: options)
+            case "replaceOne":
+                let options = try container.decode(ReplaceOneModelOptions.self, forKey: .arguments)
+                let args = try container.nestedContainer(keyedBy: ReplaceOneKeys.self, forKey: .arguments)
+                let filter = try args.decode(BSONDocument.self, forKey: .filter)
+                let replacement = try args.decode(CollectionType.self, forKey: .replacement)
+                self = .replaceOne(filter: filter, replacement: replacement, options: options)
+            case "updateOne", "updateMany":
+                let options = try container.decode(UpdateModelOptions.self, forKey: .arguments)
+                let args = try container.nestedContainer(keyedBy: UpdateKeys.self, forKey: .arguments)
+                let filter = try args.decode(BSONDocument.self, forKey: .filter)
+                let update = try args.decode(BSONDocument.self, forKey: .update)
+                self = name == "updateOne" ?
+                    .updateOne(filter: filter, update: update, options: options) :
+                    .updateMany(filter: filter, update: update, options: options)
+            default:
+                throw DecodingError.typeMismatch(
+                    WriteModel.self,
+                    DecodingError.Context(
+                        codingPath: decoder.codingPath,
+                        debugDescription: "Unknown write model: \(name)"
+                    )
                 )
-            )
+            }
+        // new unified way
+        } else {
+            let opName: String
+            let rawArgs: [String]
+            let knownArgs: Set<String>
+
+            if let insertOne = try? container.nestedContainer(keyedBy: InsertOneKeys.self, forKey: .insertOne) {
+                let doc = try insertOne.decode(CollectionType.self, forKey: .document)
+                self = .insertOne(doc)
+
+                opName = "insertOne"
+                rawArgs = try container.decode(BSONDocument.self, forKey: .insertOne).keys
+                knownArgs = Set(InsertOneKeys.allCases.map { $0.rawValue })
+
+            } else if let deleteOne = try? container.nestedContainer(keyedBy: DeleteKeys.self, forKey: .deleteOne) {
+                let filter = try deleteOne.decode(BSONDocument.self, forKey: .filter)
+                let options = try container.decode(DeleteModelOptions.self, forKey: .deleteOne)
+
+                self = .deleteOne(filter, options: options)
+
+                opName = "deleteOne"
+                rawArgs = try container.decode(BSONDocument.self, forKey: .deleteOne).keys
+                knownArgs = Set(
+                    DeleteKeys.allCases.map { $0.rawValue } +
+                    Mirror(reflecting: options).children.map { $0.label! }
+                )
+
+            } else if let deleteMany = try? container.nestedContainer(keyedBy: DeleteKeys.self, forKey: .deleteMany) {
+                let filter = try deleteMany.decode(BSONDocument.self, forKey: .filter)
+                let options = try container.decode(DeleteModelOptions.self, forKey: .deleteMany)
+
+                self = .deleteMany(filter, options: options)
+                
+                opName = "deleteMany"
+                rawArgs = try container.decode(BSONDocument.self, forKey: .deleteMany).keys
+                knownArgs = Set(
+                    DeleteKeys.allCases.map { $0.rawValue } +
+                    Mirror(reflecting: options).children.map { $0.label! }
+                )
+
+            } else if let replaceOne = try? container.nestedContainer(keyedBy: ReplaceOneKeys.self, forKey: .replaceOne) {
+                let filter = try replaceOne.decode(BSONDocument.self, forKey: .filter)
+                let replacement = try replaceOne.decode(CollectionType.self, forKey: .replacement)
+                let options = try container.decode(ReplaceOneModelOptions.self, forKey: .replaceOne)
+
+                self = .replaceOne(filter: filter, replacement: replacement, options: options)
+
+                opName = "replaceOne"
+                rawArgs = try container.decode(BSONDocument.self, forKey: .replaceOne).keys
+                knownArgs = Set(
+                    ReplaceOneKeys.allCases.map { $0.rawValue } +
+                    Mirror(reflecting: options).children.map { $0.label! }
+                )
+
+            } else if let updateOne = try? container.nestedContainer(keyedBy: UpdateKeys.self, forKey: .updateOne) {
+                let filter = try updateOne.decode(BSONDocument.self, forKey: .filter)
+                let update = try updateOne.decode(BSONDocument.self, forKey: .update)
+                let options = try container.decode(UpdateModelOptions.self, forKey: .updateOne)
+
+                self = .updateOne(filter: filter, update: update, options: options)
+
+                opName = "updateOne"
+                rawArgs = try container.decode(BSONDocument.self, forKey: .updateOne).keys
+                knownArgs = Set(
+                    UpdateKeys.allCases.map { $0.rawValue } +
+                    Mirror(reflecting: options).children.map { $0.label! }
+                )
+            } else {
+                let updateMany = try container.nestedContainer(keyedBy: UpdateKeys.self, forKey: .updateMany)
+                let filter = try updateMany.decode(BSONDocument.self, forKey: .filter)
+                let update = try updateMany.decode(BSONDocument.self, forKey: .update)
+                let options = try container.decode(UpdateModelOptions.self, forKey: .updateMany)
+
+                self = .updateMany(filter: filter, update: update, options: options)
+
+                opName = "updateMany"
+                rawArgs = try container.decode(BSONDocument.self, forKey: .updateMany).keys
+                knownArgs = Set(
+                    UpdateKeys.allCases.map { $0.rawValue } +
+                    Mirror(reflecting: options).children.map { $0.label! }
+                )
+            }
+
+            for arg in rawArgs where !knownArgs.contains(arg) {
+                throw TestError(message: "Unsupported argument for bulkWrite \(opName): \(arg)")
+            }
         }
     }
 }

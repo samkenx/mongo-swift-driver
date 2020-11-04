@@ -26,7 +26,7 @@ internal enum ListDatabasesResults {
 }
 
 /// Options for "listDatabases" operations.
-public struct ListDatabasesOptions {
+public struct ListDatabasesOptions: Decodable {
     /// Specifies whether to only return databases for which the user has privileges.
     public var authorizedDatabases: Bool?
 
